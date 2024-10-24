@@ -3,16 +3,21 @@ package main
 //
 // simple sequential MapReduce.
 //
-// go run mrsequential.go wc.so pg*.txt
+// go build -race -buildmode=plugin ../mrapps/wc.go
+// go run -race mrsequential.go wc.so pg*.txt
 //
 
-import "fmt"
-import "6.824/mr"
-import "plugin"
-import "os"
-import "log"
-import "io/ioutil"
-import "sort"
+import (
+	"fmt"
+	"io/ioutil"
+	"log"
+	"os"
+	"plugin"
+	"sort"
+	"sync"
+	"time"
+	"6.824/mr"
+)
 
 // for sorting by key.
 type ByKey []mr.KeyValue
@@ -23,6 +28,8 @@ func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 func main() {
+	startTime := time.Now()
+
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "Usage: mrsequential xxx.so inputfiles...\n")
 		os.Exit(1)
@@ -36,6 +43,9 @@ func main() {
 	// accumulate the intermediate Map output.
 	//
 	intermediate := []mr.KeyValue{}
+	var waitGroup sync.WaitGroup
+	var mutex sync.Mutex
+	mutex = mutex
 	for _, filename := range os.Args[2:] {
 		file, err := os.Open(filename)
 		if err != nil {
@@ -47,8 +57,25 @@ func main() {
 		}
 		file.Close()
 		kva := mapf(filename, string(content))
-		intermediate = append(intermediate, kva...)
+
+		// don't use goroutine
+		// fmt.Printf("@@@%s: start appending\n", filename)
+		// intermediate = append(intermediate, kva...)
+		// fmt.Printf("!!!%s: finish appending\n", filename)
+		
+
+		// use goroutine
+		waitGroup.Add(1)
+		go func(filename string) {
+			defer waitGroup.Done()
+			fmt.Printf("@@@%s: start appending\n", filename)
+			mutex.Lock()
+			intermediate = append(intermediate, kva...)
+			mutex.Unlock()
+			fmt.Printf("!!!%s: finish appending\n", filename)
+		}(filename)
 	}
+	waitGroup.Wait()
 
 	//
 	// a big difference from real MapReduce is that all the
@@ -84,12 +111,15 @@ func main() {
 	}
 
 	ofile.Close()
+
+
+	endTime := time.Now()
+	interval := endTime.Sub(startTime);
+	fmt.Printf("running time: %f seconds\n", interval.Seconds())
 }
 
-//
 // load the application Map and Reduce functions
 // from a plugin file, e.g. ../mrapps/wc.so
-//
 func loadPlugin(filename string) (func(string, string) []mr.KeyValue, func(string, []string) string) {
 	p, err := plugin.Open(filename)
 	if err != nil {
